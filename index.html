@@ -6,21 +6,23 @@
   <style>
     html, body { margin:0; height:100%; overflow:hidden; background:#e8f6ff; }
     #hud {
-      position: fixed; top: 10px; left: 12px; font: 14px/1.4 sans-serif;
+      position: fixed; top: 10px; left: 12px; right:12px;
+      font: 14px/1.4 sans-serif; display:flex; gap:12px; align-items:center; flex-wrap:wrap;
       background: rgba(0,0,0,0.55); color:#fff; padding:10px 12px; border-radius:10px;
-      display:flex; gap:14px; align-items:center;
     }
     #hud b { font-weight:700; }
-    #btn-reset {
+    #btn-reset, #ad-select, #file {
       background: rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.35);
-      color:#fff; padding:4px 8px; border-radius:8px; cursor:pointer; font-size:12px;
+      color:#fff; padding:4px 8px; border-radius:8px; font-size:12px;
     }
+    #ad-select { cursor:pointer; }
     #toast {
       position:fixed; top:60px; left:12px; background:#000; color:#fff;
       padding:6px 10px; border-radius:8px; opacity:0; transition:opacity .25s;
       font: 13px/1.3 sans-serif;
     }
     canvas { display:block; }
+    .spacer { flex:1; }
   </style>
 </head>
 <body>
@@ -28,7 +30,16 @@
     Skips: <b id="skips">0</b>
     Best: <b id="best">0</b>
     <button id="btn-reset" title="로컬 최고기록 삭제">Reset Best</button>
-    <span style="opacity:.8">• Drag & release to throw</span>
+    <span class="spacer"></span>
+    Ad texture:
+    <select id="ad-select" title="돌 표면에 그릴 이미지">
+      <option value="none">None</option>
+      <option value="skipbtn" selected>Skip Button (fake)</option>
+      <option value="banner">Banner (fake)</option>
+      <option value="upload">Upload…</option>
+    </select>
+    <input id="file" type="file" accept="image/*" style="display:none">
+    <span style="opacity:.85">• Drag & release to throw</span>
   </div>
   <div id="toast"></div>
   <canvas id="c"></canvas>
@@ -41,6 +52,8 @@
     const bestEl  = document.getElementById('best');
     const toastEl = document.getElementById('toast');
     const resetBtn = document.getElementById('btn-reset');
+    const adSelect = document.getElementById('ad-select');
+    const fileInput = document.getElementById('file');
 
     function fit() {
       canvas.width = innerWidth;
@@ -71,14 +84,76 @@
         g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.08);
         o.connect(g).connect(audioCtx.destination);
         o.start(); o.stop(audioCtx.currentTime + 0.09);
-      } catch(e) { /* 모바일 자동재생 제약 시 무시 */ }
+      } catch(e) {}
     }
+
+    // ---------- 가짜 광고 텍스처 (오프스크린 캔버스) ----------
+    const tex = {
+      skipbtn: makeSkipButtonTexture(),
+      banner: makeBannerTexture(),
+      upload: null // 사용자가 올린 이미지
+    };
+
+    function makeSkipButtonTexture(){
+      const c = document.createElement('canvas'); c.width = 256; c.height = 128;
+      const g = c.getContext('2d');
+      // 빨간 바탕
+      g.fillStyle = '#e53935'; roundRect(g, 8, 20, 240, 88, 22); g.fill();
+      // ▶ 아이콘
+      g.fillStyle = '#fff';
+      g.beginPath(); g.moveTo(36, 44); g.lineTo(36, 100); g.lineTo(86, 72); g.closePath(); g.fill();
+      // "SKIP AD"
+      g.font = 'bold 34px system-ui, sans-serif';
+      g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText('SKIP AD', 100, 64);
+      return c;
+    }
+
+    function makeBannerTexture(){
+      const c = document.createElement('canvas'); c.width = 256; c.height = 128;
+      const g = c.getContext('2d');
+      const grad = g.createLinearGradient(0,0,256,0);
+      grad.addColorStop(0,'#4a90e2'); grad.addColorStop(1,'#50e3c2');
+      g.fillStyle = grad; roundRect(g, 6, 16, 244, 96, 16); g.fill();
+      g.fillStyle = 'rgba(255,255,255,0.9)';
+      g.font = 'bold 28px system-ui, sans-serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText('AMAZING DEAL', 128, 56);
+      g.font = 'bold 18px system-ui, sans-serif';
+      g.fillText('Click? No. Throw!', 128, 88);
+      return c;
+    }
+
+    function roundRect(g, x, y, w, h, r){
+      g.beginPath();
+      g.moveTo(x+r, y);
+      g.arcTo(x+w, y,   x+w, y+h, r);
+      g.arcTo(x+w, y+h, x,   y+h, r);
+      g.arcTo(x,   y+h, x,   y,   r);
+      g.arcTo(x,   y,   x+w, y,   r);
+      g.closePath();
+    }
+
+    // 업로드 이미지 처리
+    adSelect.addEventListener('change', () => {
+      if (adSelect.value === 'upload') fileInput.click();
+    });
+    fileInput.addEventListener('change', () => {
+      const f = fileInput.files?.[0];
+      if (!f) return;
+      const url = URL.createObjectURL(f);
+      const img = new Image();
+      img.onload = () => {
+        tex.upload = img;
+        showToast('Image loaded. Try throwing!');
+      };
+      img.src = url;
+    });
 
     // ---------- 입력/던지기 ----------
     let isDown = false, start = {x:0,y:0}, cur = {x:0,y:0};
     let stones = [];
     let skipCount = 0;
-    let throwSkips = 0; // 한 번 던지기 동안 횟수
+    let throwSkips = 0;
 
     const GRAV = 900;
     const RESTITUTION = 0.55;
@@ -102,8 +177,20 @@
       const vx = (start.x - cur.x) * 3;
       const vy = (start.y - cur.y) * 3;
 
-      stones.push({ x:start.x, y:start.y, r:8, vx, vy, alive:true, color:'#2a7de1' });
+      stones.push({
+        x:start.x, y:start.y, r:10, vx, vy, alive:true, color:'#2a7de1',
+        texture: currentTexture()
+      });
     });
+
+    function currentTexture(){
+      const v = adSelect.value;
+      if (v === 'none') return null;
+      if (v === 'skipbtn') return tex.skipbtn;
+      if (v === 'banner')  return tex.banner;
+      if (v === 'upload')  return tex.upload || tex.skipbtn; // 업로드 전이면 기본
+      return null;
+    }
 
     function getPos(e){
       const rect = canvas.getBoundingClientRect();
@@ -116,7 +203,6 @@
       const dt = Math.min(0.033, (now - last) / 1000);
       last = now;
 
-      // 물리
       stones.forEach(s => {
         if (!s.alive) return;
         s.vy += GRAV * dt;
@@ -124,12 +210,7 @@
         s.y  += s.vy * dt;
 
         if (s.y >= waterY) {
-          if (s.vy > 0) {
-            // 스킵 카운트 & 효과음
-            skipCount++; throwSkips++;
-            skipsEl.textContent = skipCount;
-            ping();
-          }
+          if (s.vy > 0) { skipCount++; throwSkips++; skipsEl.textContent = skipCount; ping(); }
           s.y  = waterY - (s.y - waterY);
           s.vy = -Math.abs(s.vy) * RESTITUTION;
           s.vx *= WATER_DRAG;
@@ -140,14 +221,9 @@
         const speed = Math.hypot(s.vx, s.vy);
         if (speed < MIN_SPEED && s.y >= waterY - 1) {
           s.alive = false;
-          // 이번 투척 종료 시, 베스트 갱신 체크
           if (throwSkips > 0) {
-            if (throwSkips > getBest()) {
-              setBest(throwSkips);
-              showToast(`New Best! ${throwSkips} skips 🎉`);
-            } else {
-              showToast(`${throwSkips} skips`);
-            }
+            if (throwSkips > getBest()) { setBest(throwSkips); showToast(`New Best! ${throwSkips} skips 🎉`); }
+            else showToast(`${throwSkips} skips`);
             throwSkips = 0;
           }
         }
@@ -173,10 +249,42 @@
         ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(start.x, start.y, 4, 0, Math.PI*2); ctx.fill();
       }
 
-      stones.forEach(s => {
-        ctx.fillStyle = s.color;
-        ctx.beginPath(); ctx.ellipse(s.x, s.y, s.r*1.2, s.r, 0, 0, Math.PI*2); ctx.fill();
-      });
+      stones.forEach(s => drawStone(s));
+    }
+
+    function drawStone(s){
+      // 돌 타원
+      ctx.save();
+      ctx.translate(s.x, s.y);
+      const a = s.r*1.2, b = s.r;
+      // 타원 클리핑 경로
+      ctx.beginPath();
+      ctx.ellipse(0, 0, a, b, 0, 0, Math.PI*2);
+      ctx.clip();
+
+      // 배경(돌 색)
+      ctx.fillStyle = s.color;
+      ctx.fillRect(-a, -b, a*2, b*2);
+
+      // 텍스처가 있으면 스케일 맞춰서 그리기
+      if (s.texture) {
+        // 텍스처를 타원 안에 맞추기
+        const iw = s.texture.width || 256;
+        const ih = s.texture.height || 128;
+        // 타원의 가로세로 비율에 맞게 살짝 축소
+        const scale = Math.min((a*2)/iw, (b*2)/ih) * 0.95;
+        const w = iw * scale, h = ih * scale;
+        ctx.drawImage(s.texture, -w/2, -h/2, w, h);
+      }
+
+      ctx.restore();
+
+      // 가장자리 테두리
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(s.x, s.y, a, b, 0, 0, Math.PI*2);
+      ctx.stroke();
     }
 
     // ---------- 토스트 ----------
