@@ -7,47 +7,90 @@
     html, body { margin:0; height:100%; overflow:hidden; background:#e8f6ff; }
     #hud {
       position: fixed; top: 10px; left: 12px; font: 14px/1.4 sans-serif;
-      background: rgba(0,0,0,0.5); color:#fff; padding:8px 10px; border-radius:8px;
+      background: rgba(0,0,0,0.55); color:#fff; padding:10px 12px; border-radius:10px;
+      display:flex; gap:14px; align-items:center;
     }
     #hud b { font-weight:700; }
+    #btn-reset {
+      background: rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.35);
+      color:#fff; padding:4px 8px; border-radius:8px; cursor:pointer; font-size:12px;
+    }
+    #toast {
+      position:fixed; top:60px; left:12px; background:#000; color:#fff;
+      padding:6px 10px; border-radius:8px; opacity:0; transition:opacity .25s;
+      font: 13px/1.3 sans-serif;
+    }
     canvas { display:block; }
   </style>
 </head>
 <body>
-  <div id="hud">Skips: <b id="skips">0</b> • Drag & release to throw</div>
+  <div id="hud">
+    Skips: <b id="skips">0</b>
+    Best: <b id="best">0</b>
+    <button id="btn-reset" title="로컬 최고기록 삭제">Reset Best</button>
+    <span style="opacity:.8">• Drag & release to throw</span>
+  </div>
+  <div id="toast"></div>
   <canvas id="c"></canvas>
 
   <script>
+    // ---------- 캔버스/환경 ----------
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
     const skipsEl = document.getElementById('skips');
+    const bestEl  = document.getElementById('best');
+    const toastEl = document.getElementById('toast');
+    const resetBtn = document.getElementById('btn-reset');
 
-    // Resize canvas to full window
     function fit() {
       canvas.width = innerWidth;
       canvas.height = innerHeight;
-      waterY = Math.floor(canvas.height * 0.62); // water line
+      waterY = Math.floor(canvas.height * 0.62);
     }
     addEventListener('resize', fit);
     let waterY = 0; fit();
 
-    // Throw state
+    // ---------- 로컬 최고 기록 ----------
+    const BEST_KEY = 'skipad_best_skips';
+    function getBest(){ return Number(localStorage.getItem(BEST_KEY) || 0); }
+    function setBest(v){ localStorage.setItem(BEST_KEY, String(v)); bestEl.textContent = v; }
+    setBest(getBest());
+    resetBtn.onclick = () => { localStorage.removeItem(BEST_KEY); setBest(0); showToast('Best reset'); };
+
+    // ---------- 오디오(간단 효과음) ----------
+    let audioCtx;
+    function ping() {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(900, audioCtx.currentTime);
+        o.frequency.exponentialRampToValueAtTime(450, audioCtx.currentTime + 0.08);
+        g.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.08);
+        o.connect(g).connect(audioCtx.destination);
+        o.start(); o.stop(audioCtx.currentTime + 0.09);
+      } catch(e) { /* 모바일 자동재생 제약 시 무시 */ }
+    }
+
+    // ---------- 입력/던지기 ----------
     let isDown = false, start = {x:0,y:0}, cur = {x:0,y:0};
     let stones = [];
     let skipCount = 0;
+    let throwSkips = 0; // 한 번 던지기 동안 횟수
 
-    // Physics constants (tuned for 손맛)
-    const GRAV = 900;           // gravity px/s^2
-    const RESTITUTION = 0.55;   // bounce energy
-    const FRICTION_X = 0.985;   // horizontal damping per frame
-    const WATER_DRAG = 0.88;    // drag applied on each water touch
-    const MIN_SPEED = 40;       // stop threshold
+    const GRAV = 900;
+    const RESTITUTION = 0.55;
+    const FRICTION_X = 0.985;
+    const WATER_DRAG = 0.88;
+    const MIN_SPEED = 40;
 
-    // Pointer events
     canvas.addEventListener('mousedown', (e) => {
       isDown = true;
       start = getPos(e);
       cur = {...start};
+      throwSkips = 0;
     });
     canvas.addEventListener('mousemove', (e) => {
       if (isDown) cur = getPos(e);
@@ -56,17 +99,10 @@
       if (!isDown) return;
       isDown = false;
 
-      // velocity based on drag vector (start -> cur), release to throw
-      const vx = (start.x - cur.x) * 3;   // scale up power
+      const vx = (start.x - cur.x) * 3;
       const vy = (start.y - cur.y) * 3;
 
-      stones.push({
-        x: start.x, y: start.y, r: 8,
-        vx, vy,
-        alive: true,
-        lastBelow: false, // for counting "downward water touch"
-        color: '#2a7de1'
-      });
+      stones.push({ x:start.x, y:start.y, r:8, vx, vy, alive:true, color:'#2a7de1' });
     });
 
     function getPos(e){
@@ -74,90 +110,82 @@
       return { x: e.clientX - rect.left, y: e.clientY - rect.top };
     }
 
-    // Main loop
+    // ---------- 루프 ----------
     let last = performance.now();
     function loop(now){
-      const dt = Math.min(0.033, (now - last) / 1000); // clamp dt
+      const dt = Math.min(0.033, (now - last) / 1000);
       last = now;
 
-      // Physics step
+      // 물리
       stones.forEach(s => {
         if (!s.alive) return;
-
-        // Integrate
         s.vy += GRAV * dt;
-        s.x += s.vx * dt;
-        s.y += s.vy * dt;
+        s.x  += s.vx * dt;
+        s.y  += s.vy * dt;
 
-        // Water interaction (treat water line as surface)
         if (s.y >= waterY) {
-          // Count a skip only when coming DOWN through the surface
           if (s.vy > 0) {
-            skipCount++;
+            // 스킵 카운트 & 효과음
+            skipCount++; throwSkips++;
             skipsEl.textContent = skipCount;
+            ping();
           }
-          // Bounce up with energy loss + water drag
-          s.y = waterY - (s.y - waterY);                // reflect position
-          s.vy = -Math.abs(s.vy) * RESTITUTION;         // reflect velocity
-          s.vx *= WATER_DRAG;                           // water drag on x
+          s.y  = waterY - (s.y - waterY);
+          s.vy = -Math.abs(s.vy) * RESTITUTION;
+          s.vx *= WATER_DRAG;
         }
 
-        // Horizontal friction
         s.vx *= FRICTION_X;
 
-        // Life end
         const speed = Math.hypot(s.vx, s.vy);
         if (speed < MIN_SPEED && s.y >= waterY - 1) {
           s.alive = false;
+          // 이번 투척 종료 시, 베스트 갱신 체크
+          if (throwSkips > 0) {
+            if (throwSkips > getBest()) {
+              setBest(throwSkips);
+              showToast(`New Best! ${throwSkips} skips 🎉`);
+            } else {
+              showToast(`${throwSkips} skips`);
+            }
+            throwSkips = 0;
+          }
         }
       });
 
-      // Render
       draw();
-
-      // Remove dead stones to keep list small
       stones = stones.filter(s => s.alive || stones.length < 80);
-
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(loop);
 
+    // ---------- 렌더 ----------
     function draw(){
-      // sky
       ctx.clearRect(0,0,canvas.width,canvas.height);
       const grad = ctx.createLinearGradient(0,0,0,canvas.height);
-      grad.addColorStop(0,'#bfe5ff');
-      grad.addColorStop(0.6,'#e8f6ff');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0,0,canvas.width,canvas.height);
+      grad.addColorStop(0,'#bfe5ff'); grad.addColorStop(0.6,'#e8f6ff');
+      ctx.fillStyle = grad; ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle = '#9dd6ff'; ctx.fillRect(0, waterY, canvas.width, canvas.height - waterY);
 
-      // water
-      ctx.fillStyle = '#9dd6ff';
-      ctx.fillRect(0, waterY, canvas.width, canvas.height - waterY);
-
-      // aim line while dragging
       if (isDown) {
-        ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(start.x, start.y);
-        ctx.lineTo(cur.x, cur.y);
-        ctx.stroke();
-
-        // start point marker
-        ctx.fillStyle = '#333';
-        ctx.beginPath();
-        ctx.arc(start.x, start.y, 4, 0, Math.PI*2);
-        ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(start.x, start.y); ctx.lineTo(cur.x, cur.y); ctx.stroke();
+        ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(start.x, start.y, 4, 0, Math.PI*2); ctx.fill();
       }
 
-      // stones
       stones.forEach(s => {
         ctx.fillStyle = s.color;
-        ctx.beginPath();
-        ctx.ellipse(s.x, s.y, s.r*1.2, s.r, 0, 0, Math.PI*2);
-        ctx.fill();
+        ctx.beginPath(); ctx.ellipse(s.x, s.y, s.r*1.2, s.r, 0, 0, Math.PI*2); ctx.fill();
       });
+    }
+
+    // ---------- 토스트 ----------
+    let toastTimer;
+    function showToast(msg){
+      toastEl.textContent = msg;
+      toastEl.style.opacity = 1;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(()=> toastEl.style.opacity = 0, 1200);
     }
   </script>
 </body>
