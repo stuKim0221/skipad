@@ -9,6 +9,7 @@
       position: fixed; top: 10px; left: 12px; right:12px;
       font: 14px/1.4 system-ui, sans-serif; display:flex; gap:12px; align-items:center; flex-wrap:wrap;
       background: rgba(0,0,0,0.55); color:#fff; padding:10px 12px; border-radius:10px;
+      z-index: 2;
     }
     #hud b { font-weight:700; }
     #btn-reset, #ad-select, #file, #btn-submit, #btn-refresh {
@@ -19,12 +20,12 @@
     #toast {
       position:fixed; top:60px; left:12px; background:#000; color:#fff;
       padding:6px 10px; border-radius:8px; opacity:0; transition:opacity .25s;
-      font: 13px/1.3 sans-serif;
+      font: 13px/1.3 sans-serif; z-index: 2;
     }
     #leader {
       position: fixed; right: 12px; top: 72px; width: 240px;
       background: rgba(0,0,0,0.55); color:#fff; padding:10px 12px; border-radius:10px;
-      font: 13px/1.4 system-ui, sans-serif;
+      font: 13px/1.4 system-ui, sans-serif; z-index: 2;
     }
     #leader h3 { margin:0 0 6px 0; font-size:14px; }
     #leader ol { margin:6px 0 0 18px; padding:0; }
@@ -65,27 +66,32 @@
   <div id="toast"></div>
   <canvas id="c"></canvas>
 
-  <!-- Firebase CDN -->
+  <!-- Firebase CDN (있어도 되고 없어도 됨) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 
   <script>
-    // ===== Firebase 초기화 =====
-    // TODO: 여기에 당신의 firebaseConfig 붙여넣기 (A-3 단계에서 복사한 객체)
-    const firebaseConfig = {
-      // example:
-      // apiKey: "…",
-      // authDomain: "…",
-      // databaseURL: "https://<your-db>.firebasedatabase.app",
-      // projectId: "…",
-      // storageBucket: "…",
-      // messagingSenderId: "…",
-      // appId: "…"
-    };
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.database();
+    // ===== Firebase 초기화 (실패해도 게임은 정상 동작) =====
+    let db; // 전역 참조
+    try {
+      // 여기에 본인 설정을 넣었어도 되고, 비워둬도 됩니다.
+      // 비워두면 catch로 넘어가고 더미 DB로 게임은 정상 실행됩니다.
+      const firebaseConfig = window.__MY_FIREBASE__ || null; // 임시 훅
+      if (firebase && firebaseConfig) {
+        firebase.initializeApp(firebaseConfig);
+        db = firebase.database();
+        console.log('Firebase OK');
+      } else {
+        throw new Error('No firebaseConfig provided');
+      }
+    } catch (e) {
+      console.warn('Firebase disabled:', e?.message || e);
+      db = { ref: () => ({ push: async () => {}, get: async () => ({ forEach: () => {} }) }) };
+    }
+  </script>
 
-    // ===== 캔버스/환경 =====
+  <script>
+    // ===== 게임 로직 (여기부터는 항상 실행) =====
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
     const skipsEl = document.getElementById('skips');
@@ -109,236 +115,145 @@
     addEventListener('resize', fit);
     let waterY = 0; fit();
 
-    // ===== 로컬 최고 기록 =====
+    // 로컬 최고 기록
     const BEST_KEY = 'skipad_best_skips';
     function getBest(){ return Number(localStorage.getItem(BEST_KEY) || 0); }
     function setBest(v){ localStorage.setItem(BEST_KEY, String(v)); bestEl.textContent = v; }
     setBest(getBest());
     resetBtn.onclick = () => { localStorage.removeItem(BEST_KEY); setBest(0); showToast('Best reset'); };
 
-    // ===== 오디오 =====
+    // 효과음
     let audioCtx;
     function ping() {
       try {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const o = audioCtx.createOscillator();
-        const g = audioCtx.createGain();
-        o.type = 'sine';
-        o.frequency.setValueAtTime(900, audioCtx.currentTime);
-        o.frequency.exponentialRampToValueAtTime(450, audioCtx.currentTime + 0.08);
+        const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.type='sine'; o.frequency.setValueAtTime(900, audioCtx.currentTime);
+        o.frequency.exponentialRampToValueAtTime(450, audioCtx.currentTime+0.08);
         g.gain.setValueAtTime(0.15, audioCtx.currentTime);
-        g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.08);
-        o.connect(g).connect(audioCtx.destination);
-        o.start(); o.stop(audioCtx.currentTime + 0.09);
+        g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime+0.08);
+        o.connect(g).connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.09);
       } catch(e) {}
     }
 
-    // ===== 가짜 광고 텍스처 =====
-    const tex = {
-      skipbtn: makeSkipButtonTexture(),
-      banner: makeBannerTexture(),
-      upload: null
-    };
-
+    // 가짜 광고 텍스처
+    const tex = { skipbtn: makeSkipButtonTexture(), banner: makeBannerTexture(), upload: null };
     function makeSkipButtonTexture(){
-      const c = document.createElement('canvas'); c.width = 256; c.height = 128;
-      const g = c.getContext('2d');
-      g.fillStyle = '#e53935'; roundRect(g, 8, 20, 240, 88, 22); g.fill();
-      g.fillStyle = '#fff';
-      g.beginPath(); g.moveTo(36, 44); g.lineTo(36, 100); g.lineTo(86, 72); g.closePath(); g.fill();
-      g.font = 'bold 34px system-ui, sans-serif';
-      g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText('SKIP AD', 100, 64);
-      return c;
+      const c=document.createElement('canvas'); c.width=256; c.height=128; const g=c.getContext('2d');
+      g.fillStyle='#e53935'; roundRect(g,8,20,240,88,22); g.fill(); g.fillStyle='#fff';
+      g.beginPath(); g.moveTo(36,44); g.lineTo(36,100); g.lineTo(86,72); g.closePath(); g.fill();
+      g.font='bold 34px system-ui, sans-serif'; g.textAlign='left'; g.textBaseline='middle'; g.fillText('SKIP AD',100,64); return c;
     }
     function makeBannerTexture(){
-      const c = document.createElement('canvas'); c.width = 256; c.height = 128;
-      const g = c.getContext('2d');
-      const grad = g.createLinearGradient(0,0,256,0);
-      grad.addColorStop(0,'#4a90e2'); grad.addColorStop(1,'#50e3c2');
-      g.fillStyle = grad; roundRect(g, 6, 16, 244, 96, 16); g.fill();
-      g.fillStyle = 'rgba(255,255,255,0.9)';
-      g.font = 'bold 28px system-ui, sans-serif';
-      g.textAlign = 'center'; g.textBaseline = 'middle';
-      g.fillText('AMAZING DEAL', 128, 56);
-      g.font = 'bold 18px system-ui, sans-serif';
-      g.fillText('Click? No. Throw!', 128, 88);
-      return c;
+      const c=document.createElement('canvas'); c.width=256; c.height=128; const g=c.getContext('2d');
+      const grad=g.createLinearGradient(0,0,256,0); grad.addColorStop(0,'#4a90e2'); grad.addColorStop(1,'#50e3c2');
+      g.fillStyle=grad; roundRect(g,6,16,244,96,16); g.fill(); g.fillStyle='rgba(255,255,255,0.9)';
+      g.font='bold 28px system-ui, sans-serif'; g.textAlign='center'; g.textBaseline='middle'; g.fillText('AMAZING DEAL',128,56);
+      g.font='bold 18px system-ui, sans-serif'; g.fillText('Click? No. Throw!',128,88); return c;
     }
-    function roundRect(g, x, y, w, h, r){
-      g.beginPath();
-      g.moveTo(x+r, y);
-      g.arcTo(x+w, y,   x+w, y+h, r);
-      g.arcTo(x+w, y+h, x,   y+h, r);
-      g.arcTo(x,   y+h, x,   y,   r);
-      g.arcTo(x,   y,   x+w, y,   r);
-      g.closePath();
-    }
+    function roundRect(g,x,y,w,h,r){ g.beginPath(); g.moveTo(x+r,y);
+      g.arcTo(x+w,y,x+w,y+h,r); g.arcTo(x+w,y+h,x,y+h,r); g.arcTo(x,y+h,x,y,r); g.arcTo(x,y,x+w,y,r); g.closePath(); }
 
-    adSelect.addEventListener('change', () => {
-      if (adSelect.value === 'upload') fileInput.click();
-    });
+    adSelect.addEventListener('change', () => { if (adSelect.value === 'upload') fileInput.click(); });
     fileInput.addEventListener('change', () => {
-      const f = fileInput.files?.[0];
-      if (!f) return;
-      const url = URL.createObjectURL(f);
-      const img = new Image();
+      const f = fileInput.files?.[0]; if(!f) return;
+      const url = URL.createObjectURL(f); const img = new Image();
       img.onload = () => { tex.upload = img; showToast('Image loaded. Try throwing!'); };
       img.src = url;
     });
 
-    // ===== 입력/던지기 =====
-    let isDown = false, start = {x:0,y:0}, cur = {x:0,y:0};
-    let stones = [];
-    let skipCount = 0;
-    let throwSkips = 0;
-    let lastScore = 0;
+    // 입력/던지기
+    let isDown=false, start={x:0,y:0}, cur={x:0,y:0};
+    let stones=[]; let skipCount=0; let throwSkips=0; let lastScore=0;
+    const GRAV=900, RESTITUTION=0.55, FRICTION_X=0.985, WATER_DRAG=0.88, MIN_SPEED=40;
 
-    const GRAV = 900, RESTITUTION = 0.55, FRICTION_X = 0.985, WATER_DRAG = 0.88, MIN_SPEED = 40;
-
-    canvas.addEventListener('mousedown', (e) => {
-      isDown = true;
-      start = getPos(e);
-      cur = {...start};
-      throwSkips = 0;
-    });
-    canvas.addEventListener('mousemove', (e) => { if (isDown) cur = getPos(e); });
-    addEventListener('mouseup', () => {
-      if (!isDown) return;
-      isDown = false;
-      const vx = (start.x - cur.x) * 3;
-      const vy = (start.y - cur.y) * 3;
+    canvas.addEventListener('mousedown', (e)=>{ isDown=true; start=getPos(e); cur={...start}; throwSkips=0; });
+    canvas.addEventListener('mousemove', (e)=>{ if(isDown) cur=getPos(e); });
+    addEventListener('mouseup', ()=> {
+      if(!isDown) return; isDown=false;
+      const vx=(start.x-cur.x)*3, vy=(start.y-cur.y)*3;
       stones.push({ x:start.x, y:start.y, r:10, vx, vy, alive:true, color:'#2a7de1', texture: currentTexture() });
     });
 
-    function currentTexture(){
-      const v = adSelect.value;
-      if (v === 'none') return null;
-      if (v === 'skipbtn') return tex.skipbtn;
-      if (v === 'banner')  return tex.banner;
-      if (v === 'upload')  return tex.upload || tex.skipbtn;
-      return null;
-    }
-    function getPos(e){
-      const rect = canvas.getBoundingClientRect();
-      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    }
+    function currentTexture(){ const v=adSelect.value;
+      if(v==='none') return null; if(v==='skipbtn') return tex.skipbtn; if(v==='banner') return tex.banner;
+      if(v==='upload') return tex.upload || tex.skipbtn; return null; }
+    function getPos(e){ const r=canvas.getBoundingClientRect(); return { x:e.clientX-r.left, y:e.clientY-r.top }; }
 
-    // ===== 루프 =====
-    let last = performance.now();
+    let lastT=performance.now();
     function loop(now){
-      const dt = Math.min(0.033, (now - last) / 1000); last = now;
+      const dt=Math.min(0.033,(now-lastT)/1000); lastT=now;
 
-      stones.forEach(s => {
-        if (!s.alive) return;
-        s.vy += GRAV * dt; s.x += s.vx * dt; s.y += s.vy * dt;
-
-        if (s.y >= waterY) {
-          if (s.vy > 0) { skipCount++; throwSkips++; skipsEl.textContent = skipCount; ping(); }
-          s.y  = waterY - (s.y - waterY);
-          s.vy = -Math.abs(s.vy) * RESTITUTION;
-          s.vx *= WATER_DRAG;
+      stones.forEach(s=>{
+        if(!s.alive) return;
+        s.vy+=GRAV*dt; s.x+=s.vx*dt; s.y+=s.vy*dt;
+        if(s.y>=waterY){
+          if(s.vy>0){ skipCount++; throwSkips++; skipsEl.textContent=skipCount; ping(); }
+          s.y=waterY-(s.y-waterY); s.vy=-Math.abs(s.vy)*RESTITUTION; s.vx*=WATER_DRAG;
         }
-        s.vx *= FRICTION_X;
-
-        const speed = Math.hypot(s.vx, s.vy);
-        if (speed < MIN_SPEED && s.y >= waterY - 1) {
-          s.alive = false;
-          if (throwSkips > 0) {
-            lastScore = throwSkips;
-            lastEl.textContent = `Last: ${lastScore} skips`;
-            if (throwSkips > getBest()) { setBest(throwSkips); showToast(`New Best! ${throwSkips} skips 🎉`); }
+        s.vx*=FRICTION_X;
+        const speed=Math.hypot(s.vx,s.vy);
+        if(speed<MIN_SPEED && s.y>=waterY-1){
+          s.alive=false;
+          if(throwSkips>0){
+            lastScore=throwSkips; lastEl.textContent=`Last: ${lastScore} skips`;
+            if(throwSkips>getBest()){ setBest(throwSkips); showToast(`New Best! ${throwSkips} skips 🎉`); }
             else showToast(`${throwSkips} skips`);
-            throwSkips = 0;
+            throwSkips=0;
           }
         }
       });
 
       draw();
-      stones = stones.filter(s => s.alive || stones.length < 80);
+      stones=stones.filter(s=>s.alive||stones.length<80);
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(loop);
 
-    // ===== 렌더 =====
     function draw(){
       ctx.clearRect(0,0,canvas.width,canvas.height);
-      const grad = ctx.createLinearGradient(0,0,0,canvas.height);
+      const grad=ctx.createLinearGradient(0,0,0,canvas.height);
       grad.addColorStop(0,'#bfe5ff'); grad.addColorStop(0.6,'#e8f6ff');
-      ctx.fillStyle = grad; ctx.fillRect(0,0,canvas.width,canvas.height);
-      ctx.fillStyle = '#9dd6ff'; ctx.fillRect(0, waterY, canvas.width, canvas.height - waterY);
-
-      if (isDown) {
-        ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(start.x, start.y); ctx.lineTo(cur.x, cur.y); ctx.stroke();
-        ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(start.x, start.y, 4, 0, Math.PI*2); ctx.fill();
-      }
-
-      stones.forEach(s => drawStone(s));
+      ctx.fillStyle=grad; ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle='#9dd6ff'; ctx.fillRect(0, waterY, canvas.width, canvas.height-waterY);
+      if(isDown){ ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(start.x,start.y); ctx.lineTo(cur.x,cur.y); ctx.stroke();
+        ctx.fillStyle='#333'; ctx.beginPath(); ctx.arc(start.x,start.y,4,0,Math.PI*2); ctx.fill(); }
+      stones.forEach(s=>drawStone(s));
     }
     function drawStone(s){
-      ctx.save(); ctx.translate(s.x, s.y);
-      const a = s.r*1.2, b = s.r;
-      ctx.beginPath(); ctx.ellipse(0, 0, a, b, 0, 0, Math.PI*2); ctx.clip();
-      ctx.fillStyle = s.color; ctx.fillRect(-a, -b, a*2, b*2);
-      if (s.texture) {
-        const iw = s.texture.width || 256, ih = s.texture.height || 128;
-        const scale = Math.min((a*2)/iw, (b*2)/ih) * 0.95;
-        const w = iw * scale, h = ih * scale;
-        ctx.drawImage(s.texture, -w/2, -h/2, w, h);
-      }
-      ctx.restore();
-      ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.ellipse(s.x, s.y, a, b, 0, 0, Math.PI*2); ctx.stroke();
+      ctx.save(); ctx.translate(s.x,s.y);
+      const a=s.r*1.2, b=s.r; ctx.beginPath(); ctx.ellipse(0,0,a,b,0,0,Math.PI*2); ctx.clip();
+      ctx.fillStyle=s.color; ctx.fillRect(-a,-b,a*2,b*2);
+      if(s.texture){ const iw=s.texture.width||256, ih=s.texture.height||128;
+        const scale=Math.min((a*2)/iw,(b*2)/ih)*0.95; const w=iw*scale, h=ih*scale;
+        ctx.drawImage(s.texture,-w/2,-h/2,w,h); }
+      ctx.restore(); ctx.strokeStyle='rgba(0,0,0,0.25)'; ctx.lineWidth=1; ctx.beginPath(); ctx.ellipse(s.x,s.y,a,b,0,0,Math.PI*2); ctx.stroke();
     }
 
-    // ===== 토스트 =====
-    let toastTimer;
-    function showToast(msg){
-      toastEl.textContent = msg;
-      toastEl.style.opacity = 1;
-      clearTimeout(toastTimer);
-      toastTimer = setTimeout(()=> toastEl.style.opacity = 0, 1200);
-    }
-
-    // ===== 랭킹: 쓰기 & 읽기 =====
+    // 랭킹 (Firebase가 없으면 조용히 동작 안 함)
     async function submitScore(){
-      if (!lastScore || lastScore < 0) { showToast('No score to submit'); return; }
-      const nickname = (nameEl.value || 'anon').trim().slice(0,20) || 'anon';
-      const now = Date.now();
-      try {
-        await db.ref('scores').push({
-          name: nickname,
-          score: lastScore,
-          at: now
-        });
-        showToast('Submitted!');
-        await loadTop();
-      } catch(e){
-        console.error(e);
-        showToast('Submit failed');
-      }
+      if(!lastScore||lastScore<0){ showToast('No score to submit'); return; }
+      try{
+        const nickname=(nameEl.value||'anon').trim().slice(0,20)||'anon';
+        await db.ref('scores').push({name:nickname, score:lastScore, at:Date.now()});
+        showToast('Submitted!'); await loadTop();
+      }catch(e){ console.warn(e); showToast('Submit failed'); }
     }
-
     async function loadTop(){
-      // score 상위 10 (Realtime DB는 역정렬이 약해 at와 함께 불러서 정렬하는 방식 다양)
-      // 여기서는 score 기준으로 한 번에 가져온 뒤, 클라이언트에서 내림차순 정렬→상위10
-      const snap = await db.ref('scores').limitToLast(100).get(); // 최근 100개 가져와 상위 선별
-      const rows = [];
-      snap.forEach(ch => { rows.push(ch.val()); });
-      rows.sort((a,b) => b.score - a.score || a.at - b.at);
-      const top = rows.slice(0,10);
-
-      listEl.innerHTML = '';
-      top.forEach((r,i) => {
-        const li = document.createElement('li');
-        li.textContent = `${i+1}. ${r.name} — ${r.score}`;
-        listEl.appendChild(li);
-      });
+      try{
+        const snap=await db.ref('scores').limitToLast(100).get();
+        const rows=[]; snap.forEach(ch=>rows.push(ch.val()));
+        rows.sort((a,b)=>b.score-a.score || a.at-b.at); const top=rows.slice(0,10);
+        listEl.innerHTML=''; top.forEach((r,i)=>{ const li=document.createElement('li'); li.textContent=`${i+1}. ${r.name} — ${r.score}`; listEl.appendChild(li); });
+      }catch(e){ /* 랭킹 비활성 시 무시 */ }
     }
-
-    submitBtn.addEventListener('click', submitScore);
-    refreshBtn.addEventListener('click', loadTop);
+    document.getElementById('btn-submit').addEventListener('click', submitScore);
+    document.getElementById('btn-refresh').addEventListener('click', loadTop);
     loadTop();
+
+    // 유틸
+    let toastTimer;
+    function showToast(msg){ toastEl.textContent=msg; toastEl.style.opacity=1; clearTimeout(toastTimer); toastTimer=setTimeout(()=>toastEl.style.opacity=0,1200); }
   </script>
 </body>
 </html>
