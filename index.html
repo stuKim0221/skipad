@@ -4,41 +4,161 @@
   <meta charset="utf-8">
   <title>SkipAD</title>
   <style>
-    body {
-      margin: 0;
-      height: 100vh;
-      background: linear-gradient(to bottom, #9dd6ff, #ffffff);
-      overflow: hidden;
-      cursor: crosshair;
+    html, body { margin:0; height:100%; overflow:hidden; background:#e8f6ff; }
+    #hud {
+      position: fixed; top: 10px; left: 12px; font: 14px/1.4 sans-serif;
+      background: rgba(0,0,0,0.5); color:#fff; padding:8px 10px; border-radius:8px;
     }
-    .ripple {
-      position: absolute;
-      width: 30px;
-      height: 30px;
-      background: rgba(0, 120, 255, 0.4);
-      border-radius: 50%;
-      transform: scale(0);
-      animation: ripple 0.6s ease-out forwards;
-    }
-    @keyframes ripple {
-      to {
-        transform: scale(4);
-        opacity: 0;
-      }
-    }
+    #hud b { font-weight:700; }
+    canvas { display:block; }
   </style>
 </head>
 <body>
+  <div id="hud">Skips: <b id="skips">0</b> • Drag & release to throw</div>
+  <canvas id="c"></canvas>
+
   <script>
-    // 클릭 시 물수제비 효과 생성
-    document.body.addEventListener('click', (e) => {
-      const ripple = document.createElement('div');
-      ripple.classList.add('ripple');
-      ripple.style.left = `${e.clientX - 15}px`;
-      ripple.style.top = `${e.clientY - 15}px`;
-      document.body.appendChild(ripple);
-      setTimeout(() => ripple.remove(), 600);
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const skipsEl = document.getElementById('skips');
+
+    // Resize canvas to full window
+    function fit() {
+      canvas.width = innerWidth;
+      canvas.height = innerHeight;
+      waterY = Math.floor(canvas.height * 0.62); // water line
+    }
+    addEventListener('resize', fit);
+    let waterY = 0; fit();
+
+    // Throw state
+    let isDown = false, start = {x:0,y:0}, cur = {x:0,y:0};
+    let stones = [];
+    let skipCount = 0;
+
+    // Physics constants (tuned for 손맛)
+    const GRAV = 900;           // gravity px/s^2
+    const RESTITUTION = 0.55;   // bounce energy
+    const FRICTION_X = 0.985;   // horizontal damping per frame
+    const WATER_DRAG = 0.88;    // drag applied on each water touch
+    const MIN_SPEED = 40;       // stop threshold
+
+    // Pointer events
+    canvas.addEventListener('mousedown', (e) => {
+      isDown = true;
+      start = getPos(e);
+      cur = {...start};
     });
+    canvas.addEventListener('mousemove', (e) => {
+      if (isDown) cur = getPos(e);
+    });
+    addEventListener('mouseup', () => {
+      if (!isDown) return;
+      isDown = false;
+
+      // velocity based on drag vector (start -> cur), release to throw
+      const vx = (start.x - cur.x) * 3;   // scale up power
+      const vy = (start.y - cur.y) * 3;
+
+      stones.push({
+        x: start.x, y: start.y, r: 8,
+        vx, vy,
+        alive: true,
+        lastBelow: false, // for counting "downward water touch"
+        color: '#2a7de1'
+      });
+    });
+
+    function getPos(e){
+      const rect = canvas.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    // Main loop
+    let last = performance.now();
+    function loop(now){
+      const dt = Math.min(0.033, (now - last) / 1000); // clamp dt
+      last = now;
+
+      // Physics step
+      stones.forEach(s => {
+        if (!s.alive) return;
+
+        // Integrate
+        s.vy += GRAV * dt;
+        s.x += s.vx * dt;
+        s.y += s.vy * dt;
+
+        // Water interaction (treat water line as surface)
+        if (s.y >= waterY) {
+          // Count a skip only when coming DOWN through the surface
+          if (s.vy > 0) {
+            skipCount++;
+            skipsEl.textContent = skipCount;
+          }
+          // Bounce up with energy loss + water drag
+          s.y = waterY - (s.y - waterY);                // reflect position
+          s.vy = -Math.abs(s.vy) * RESTITUTION;         // reflect velocity
+          s.vx *= WATER_DRAG;                           // water drag on x
+        }
+
+        // Horizontal friction
+        s.vx *= FRICTION_X;
+
+        // Life end
+        const speed = Math.hypot(s.vx, s.vy);
+        if (speed < MIN_SPEED && s.y >= waterY - 1) {
+          s.alive = false;
+        }
+      });
+
+      // Render
+      draw();
+
+      // Remove dead stones to keep list small
+      stones = stones.filter(s => s.alive || stones.length < 80);
+
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+
+    function draw(){
+      // sky
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      const grad = ctx.createLinearGradient(0,0,0,canvas.height);
+      grad.addColorStop(0,'#bfe5ff');
+      grad.addColorStop(0.6,'#e8f6ff');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+
+      // water
+      ctx.fillStyle = '#9dd6ff';
+      ctx.fillRect(0, waterY, canvas.width, canvas.height - waterY);
+
+      // aim line while dragging
+      if (isDown) {
+        ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(start.x, start.y);
+        ctx.lineTo(cur.x, cur.y);
+        ctx.stroke();
+
+        // start point marker
+        ctx.fillStyle = '#333';
+        ctx.beginPath();
+        ctx.arc(start.x, start.y, 4, 0, Math.PI*2);
+        ctx.fill();
+      }
+
+      // stones
+      stones.forEach(s => {
+        ctx.fillStyle = s.color;
+        ctx.beginPath();
+        ctx.ellipse(s.x, s.y, s.r*1.2, s.r, 0, 0, Math.PI*2);
+        ctx.fill();
+      });
+    }
   </script>
 </body>
 </html>
