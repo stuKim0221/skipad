@@ -7,13 +7,13 @@
     html, body { margin:0; height:100%; overflow:hidden; background:#e8f6ff; }
     #hud {
       position: fixed; top: 10px; left: 12px; right:12px;
-      font: 14px/1.4 sans-serif; display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+      font: 14px/1.4 system-ui, sans-serif; display:flex; gap:12px; align-items:center; flex-wrap:wrap;
       background: rgba(0,0,0,0.55); color:#fff; padding:10px 12px; border-radius:10px;
     }
     #hud b { font-weight:700; }
-    #btn-reset, #ad-select, #file {
+    #btn-reset, #ad-select, #file, #btn-submit, #btn-refresh {
       background: rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.35);
-      color:#fff; padding:4px 8px; border-radius:8px; font-size:12px;
+      color:#fff; padding:4px 8px; border-radius:8px; font-size:12px; cursor:pointer;
     }
     #ad-select { cursor:pointer; }
     #toast {
@@ -21,6 +21,15 @@
       padding:6px 10px; border-radius:8px; opacity:0; transition:opacity .25s;
       font: 13px/1.3 sans-serif;
     }
+    #leader {
+      position: fixed; right: 12px; top: 72px; width: 240px;
+      background: rgba(0,0,0,0.55); color:#fff; padding:10px 12px; border-radius:10px;
+      font: 13px/1.4 system-ui, sans-serif;
+    }
+    #leader h3 { margin:0 0 6px 0; font-size:14px; }
+    #leader ol { margin:6px 0 0 18px; padding:0; }
+    #leader li { margin:2px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    #name { width: 110px; padding:4px 6px; border-radius:8px; border:1px solid rgba(255,255,255,0.35); background:rgba(255,255,255,0.12); color:#fff; }
     canvas { display:block; }
     .spacer { flex:1; }
   </style>
@@ -41,11 +50,42 @@
     <input id="file" type="file" accept="image/*" style="display:none">
     <span style="opacity:.85">• Drag & release to throw</span>
   </div>
+
+  <div id="leader">
+    <h3>🏆 Leaderboard (Top 10)</h3>
+    <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px">
+      <input id="name" placeholder="nickname (opt)" maxlength="20">
+      <button id="btn-submit" title="마지막 점수 올리기">Submit</button>
+      <button id="btn-refresh" title="새로고침">↻</button>
+    </div>
+    <ol id="list"></ol>
+    <div id="last" style="opacity:.85; margin-top:6px"></div>
+  </div>
+
   <div id="toast"></div>
   <canvas id="c"></canvas>
 
+  <!-- Firebase CDN -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
   <script>
-    // ---------- 캔버스/환경 ----------
+    // ===== Firebase 초기화 =====
+    // TODO: 여기에 당신의 firebaseConfig 붙여넣기 (A-3 단계에서 복사한 객체)
+    const firebaseConfig = {
+      // example:
+      // apiKey: "…",
+      // authDomain: "…",
+      // databaseURL: "https://<your-db>.firebasedatabase.app",
+      // projectId: "…",
+      // storageBucket: "…",
+      // messagingSenderId: "…",
+      // appId: "…"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    // ===== 캔버스/환경 =====
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
     const skipsEl = document.getElementById('skips');
@@ -55,6 +95,12 @@
     const adSelect = document.getElementById('ad-select');
     const fileInput = document.getElementById('file');
 
+    const listEl = document.getElementById('list');
+    const nameEl = document.getElementById('name');
+    const submitBtn = document.getElementById('btn-submit');
+    const refreshBtn = document.getElementById('btn-refresh');
+    const lastEl = document.getElementById('last');
+
     function fit() {
       canvas.width = innerWidth;
       canvas.height = innerHeight;
@@ -63,14 +109,14 @@
     addEventListener('resize', fit);
     let waterY = 0; fit();
 
-    // ---------- 로컬 최고 기록 ----------
+    // ===== 로컬 최고 기록 =====
     const BEST_KEY = 'skipad_best_skips';
     function getBest(){ return Number(localStorage.getItem(BEST_KEY) || 0); }
     function setBest(v){ localStorage.setItem(BEST_KEY, String(v)); bestEl.textContent = v; }
     setBest(getBest());
     resetBtn.onclick = () => { localStorage.removeItem(BEST_KEY); setBest(0); showToast('Best reset'); };
 
-    // ---------- 오디오(간단 효과음) ----------
+    // ===== 오디오 =====
     let audioCtx;
     function ping() {
       try {
@@ -87,27 +133,23 @@
       } catch(e) {}
     }
 
-    // ---------- 가짜 광고 텍스처 (오프스크린 캔버스) ----------
+    // ===== 가짜 광고 텍스처 =====
     const tex = {
       skipbtn: makeSkipButtonTexture(),
       banner: makeBannerTexture(),
-      upload: null // 사용자가 올린 이미지
+      upload: null
     };
 
     function makeSkipButtonTexture(){
       const c = document.createElement('canvas'); c.width = 256; c.height = 128;
       const g = c.getContext('2d');
-      // 빨간 바탕
       g.fillStyle = '#e53935'; roundRect(g, 8, 20, 240, 88, 22); g.fill();
-      // ▶ 아이콘
       g.fillStyle = '#fff';
       g.beginPath(); g.moveTo(36, 44); g.lineTo(36, 100); g.lineTo(86, 72); g.closePath(); g.fill();
-      // "SKIP AD"
       g.font = 'bold 34px system-ui, sans-serif';
       g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText('SKIP AD', 100, 64);
       return c;
     }
-
     function makeBannerTexture(){
       const c = document.createElement('canvas'); c.width = 256; c.height = 128;
       const g = c.getContext('2d');
@@ -122,7 +164,6 @@
       g.fillText('Click? No. Throw!', 128, 88);
       return c;
     }
-
     function roundRect(g, x, y, w, h, r){
       g.beginPath();
       g.moveTo(x+r, y);
@@ -133,7 +174,6 @@
       g.closePath();
     }
 
-    // 업로드 이미지 처리
     adSelect.addEventListener('change', () => {
       if (adSelect.value === 'upload') fileInput.click();
     });
@@ -142,24 +182,18 @@
       if (!f) return;
       const url = URL.createObjectURL(f);
       const img = new Image();
-      img.onload = () => {
-        tex.upload = img;
-        showToast('Image loaded. Try throwing!');
-      };
+      img.onload = () => { tex.upload = img; showToast('Image loaded. Try throwing!'); };
       img.src = url;
     });
 
-    // ---------- 입력/던지기 ----------
+    // ===== 입력/던지기 =====
     let isDown = false, start = {x:0,y:0}, cur = {x:0,y:0};
     let stones = [];
     let skipCount = 0;
     let throwSkips = 0;
+    let lastScore = 0;
 
-    const GRAV = 900;
-    const RESTITUTION = 0.55;
-    const FRICTION_X = 0.985;
-    const WATER_DRAG = 0.88;
-    const MIN_SPEED = 40;
+    const GRAV = 900, RESTITUTION = 0.55, FRICTION_X = 0.985, WATER_DRAG = 0.88, MIN_SPEED = 40;
 
     canvas.addEventListener('mousedown', (e) => {
       isDown = true;
@@ -167,20 +201,13 @@
       cur = {...start};
       throwSkips = 0;
     });
-    canvas.addEventListener('mousemove', (e) => {
-      if (isDown) cur = getPos(e);
-    });
+    canvas.addEventListener('mousemove', (e) => { if (isDown) cur = getPos(e); });
     addEventListener('mouseup', () => {
       if (!isDown) return;
       isDown = false;
-
       const vx = (start.x - cur.x) * 3;
       const vy = (start.y - cur.y) * 3;
-
-      stones.push({
-        x:start.x, y:start.y, r:10, vx, vy, alive:true, color:'#2a7de1',
-        texture: currentTexture()
-      });
+      stones.push({ x:start.x, y:start.y, r:10, vx, vy, alive:true, color:'#2a7de1', texture: currentTexture() });
     });
 
     function currentTexture(){
@@ -188,26 +215,22 @@
       if (v === 'none') return null;
       if (v === 'skipbtn') return tex.skipbtn;
       if (v === 'banner')  return tex.banner;
-      if (v === 'upload')  return tex.upload || tex.skipbtn; // 업로드 전이면 기본
+      if (v === 'upload')  return tex.upload || tex.skipbtn;
       return null;
     }
-
     function getPos(e){
       const rect = canvas.getBoundingClientRect();
       return { x: e.clientX - rect.left, y: e.clientY - rect.top };
     }
 
-    // ---------- 루프 ----------
+    // ===== 루프 =====
     let last = performance.now();
     function loop(now){
-      const dt = Math.min(0.033, (now - last) / 1000);
-      last = now;
+      const dt = Math.min(0.033, (now - last) / 1000); last = now;
 
       stones.forEach(s => {
         if (!s.alive) return;
-        s.vy += GRAV * dt;
-        s.x  += s.vx * dt;
-        s.y  += s.vy * dt;
+        s.vy += GRAV * dt; s.x += s.vx * dt; s.y += s.vy * dt;
 
         if (s.y >= waterY) {
           if (s.vy > 0) { skipCount++; throwSkips++; skipsEl.textContent = skipCount; ping(); }
@@ -215,13 +238,14 @@
           s.vy = -Math.abs(s.vy) * RESTITUTION;
           s.vx *= WATER_DRAG;
         }
-
         s.vx *= FRICTION_X;
 
         const speed = Math.hypot(s.vx, s.vy);
         if (speed < MIN_SPEED && s.y >= waterY - 1) {
           s.alive = false;
           if (throwSkips > 0) {
+            lastScore = throwSkips;
+            lastEl.textContent = `Last: ${lastScore} skips`;
             if (throwSkips > getBest()) { setBest(throwSkips); showToast(`New Best! ${throwSkips} skips 🎉`); }
             else showToast(`${throwSkips} skips`);
             throwSkips = 0;
@@ -235,7 +259,7 @@
     }
     requestAnimationFrame(loop);
 
-    // ---------- 렌더 ----------
+    // ===== 렌더 =====
     function draw(){
       ctx.clearRect(0,0,canvas.width,canvas.height);
       const grad = ctx.createLinearGradient(0,0,0,canvas.height);
@@ -251,43 +275,23 @@
 
       stones.forEach(s => drawStone(s));
     }
-
     function drawStone(s){
-      // 돌 타원
-      ctx.save();
-      ctx.translate(s.x, s.y);
+      ctx.save(); ctx.translate(s.x, s.y);
       const a = s.r*1.2, b = s.r;
-      // 타원 클리핑 경로
-      ctx.beginPath();
-      ctx.ellipse(0, 0, a, b, 0, 0, Math.PI*2);
-      ctx.clip();
-
-      // 배경(돌 색)
-      ctx.fillStyle = s.color;
-      ctx.fillRect(-a, -b, a*2, b*2);
-
-      // 텍스처가 있으면 스케일 맞춰서 그리기
+      ctx.beginPath(); ctx.ellipse(0, 0, a, b, 0, 0, Math.PI*2); ctx.clip();
+      ctx.fillStyle = s.color; ctx.fillRect(-a, -b, a*2, b*2);
       if (s.texture) {
-        // 텍스처를 타원 안에 맞추기
-        const iw = s.texture.width || 256;
-        const ih = s.texture.height || 128;
-        // 타원의 가로세로 비율에 맞게 살짝 축소
+        const iw = s.texture.width || 256, ih = s.texture.height || 128;
         const scale = Math.min((a*2)/iw, (b*2)/ih) * 0.95;
         const w = iw * scale, h = ih * scale;
         ctx.drawImage(s.texture, -w/2, -h/2, w, h);
       }
-
       ctx.restore();
-
-      // 가장자리 테두리
-      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.ellipse(s.x, s.y, a, b, 0, 0, Math.PI*2);
-      ctx.stroke();
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.ellipse(s.x, s.y, a, b, 0, 0, Math.PI*2); ctx.stroke();
     }
 
-    // ---------- 토스트 ----------
+    // ===== 토스트 =====
     let toastTimer;
     function showToast(msg){
       toastEl.textContent = msg;
@@ -295,6 +299,46 @@
       clearTimeout(toastTimer);
       toastTimer = setTimeout(()=> toastEl.style.opacity = 0, 1200);
     }
+
+    // ===== 랭킹: 쓰기 & 읽기 =====
+    async function submitScore(){
+      if (!lastScore || lastScore < 0) { showToast('No score to submit'); return; }
+      const nickname = (nameEl.value || 'anon').trim().slice(0,20) || 'anon';
+      const now = Date.now();
+      try {
+        await db.ref('scores').push({
+          name: nickname,
+          score: lastScore,
+          at: now
+        });
+        showToast('Submitted!');
+        await loadTop();
+      } catch(e){
+        console.error(e);
+        showToast('Submit failed');
+      }
+    }
+
+    async function loadTop(){
+      // score 상위 10 (Realtime DB는 역정렬이 약해 at와 함께 불러서 정렬하는 방식 다양)
+      // 여기서는 score 기준으로 한 번에 가져온 뒤, 클라이언트에서 내림차순 정렬→상위10
+      const snap = await db.ref('scores').limitToLast(100).get(); // 최근 100개 가져와 상위 선별
+      const rows = [];
+      snap.forEach(ch => { rows.push(ch.val()); });
+      rows.sort((a,b) => b.score - a.score || a.at - b.at);
+      const top = rows.slice(0,10);
+
+      listEl.innerHTML = '';
+      top.forEach((r,i) => {
+        const li = document.createElement('li');
+        li.textContent = `${i+1}. ${r.name} — ${r.score}`;
+        listEl.appendChild(li);
+      });
+    }
+
+    submitBtn.addEventListener('click', submitScore);
+    refreshBtn.addEventListener('click', loadTop);
+    loadTop();
   </script>
 </body>
 </html>
